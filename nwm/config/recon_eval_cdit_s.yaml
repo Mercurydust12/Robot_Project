@@ -1,0 +1,21 @@
+run_name: cdit_s_eval
+results_dir: logs
+model: CDiT-S/2
+
+# Match the default eval/training assumptions used by this repo.
+image_size: 224
+context_size: 4
+normalize: True
+
+datasets:
+  recon:
+    data_folder: /home/ial-zhangy/nas/datasets/nwm/processed/recon
+    train: data_splits/recon/train/
+    test: data_splits/recon/test/
+    goals_per_obs: 4
+
+eval_datasets:
+  recon:
+    data_folder: /home/ial-zhangy/nas/datasets/nwm/processed/recon
+    test: data_splits/recon/test/
+    goals_per_obs: 4
