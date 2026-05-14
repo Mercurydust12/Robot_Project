@@ -2,7 +2,6 @@ nwm/__pycache__
 nwm/results
 nwm/diffusion/__pycache__
 nwm/logs
-nwm/.vscode
 nwm/.ipynb_checkpoints
 nwm/models
 nwm/nwm/data
@@ -13,3 +12,7 @@ nwm/downloads
 nwm/eval_results
 
 AGENTS.md
+checkpoint
+.vscode
+.codex
+output/quantilize
