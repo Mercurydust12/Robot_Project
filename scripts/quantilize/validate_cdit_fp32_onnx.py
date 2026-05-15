@@ -55,6 +55,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -80,10 +81,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to NWM YAML config.")
     parser.add_argument("--checkpoint", default=None, help="Optional checkpoint path.")
     parser.add_argument("--onnx", required=True, help="Path to exported ONNX model.")
-    parser.add_argument("--inputs", required=True, help="Path to saved NPZ alignment inputs.")
+    parser.add_argument("--inputs", default=None, help="Optional saved NPZ alignment inputs for batch size 1.")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--onnx-provider", default="CPUExecutionProvider", help="ONNX Runtime execution provider.")
+    parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1], help="Batch sizes to validate.")
     parser.add_argument("--rtol", type=float, default=1e-4)
     parser.add_argument("--atol", type=float, default=1e-4)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--context-size", type=int, default=None)
+    parser.add_argument("--benchmark", action="store_true", help="Benchmark single-step CDiT denoiser inference.")
+    parser.add_argument("--benchmark-iters", type=int, default=50)
+    parser.add_argument("--warmup-iters", type=int, default=10)
     return parser.parse_args()
 
 
@@ -183,6 +191,28 @@ def resolve_path(path: str) -> Path:
     return REPO_ROOT / candidate
 
 
+def make_inputs(
+    batch_size: int,
+    context_size: int,
+    latent_size: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    x = torch.randn(batch_size, 4, latent_size, latent_size, device=device, dtype=torch.float32)
+    t = torch.randint(0, 1000, (batch_size,), device=device, dtype=torch.long)
+    y = torch.randn(batch_size, 3, device=device, dtype=torch.float32)
+    x_cond = torch.randn(
+        batch_size,
+        context_size,
+        4,
+        latent_size,
+        latent_size,
+        device=device,
+        dtype=torch.float32,
+    )
+    rel_t = torch.rand(batch_size, device=device, dtype=torch.float32)
+    return x, t, y, x_cond, rel_t
+
+
 def load_inputs(path: str, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
     data = np.load(resolve_path(path))
     x = torch.from_numpy(data["x"]).to(device=device, dtype=torch.float32)
@@ -195,23 +225,40 @@ def load_inputs(path: str, device: torch.device) -> tuple[torch.Tensor, torch.Te
     return x, t, y, x_cond, rel_t, context_size, seed
 
 
-def run_onnx(onnx_path: str, inputs: tuple[torch.Tensor, ...]) -> np.ndarray:
+def create_onnx_session(onnx_path: str, provider: str):
     import onnxruntime as ort
 
-    providers = ["CPUExecutionProvider"]
-    session = ort.InferenceSession(onnx_path, providers=providers)
+    available_providers = ort.get_available_providers()
+    print(f"ONNX Runtime providers available: {available_providers}")
+    if provider not in available_providers:
+        raise RuntimeError(
+            f"Requested ONNX Runtime provider '{provider}' is not available. "
+            f"Available providers: {available_providers}"
+        )
+    session = ort.InferenceSession(onnx_path, providers=[provider])
+    print(f"ONNX Runtime provider selected: {provider}")
+    print(f"ONNX Runtime providers used: {session.get_providers()}")
+    return session
+
+
+def make_onnx_feed(session, inputs: tuple[torch.Tensor, ...]) -> dict[str, np.ndarray]:
     input_names = [inp.name for inp in session.get_inputs()]
     feed = {
-        "x": inputs[0].detach().cpu().numpy(),
-        "t": inputs[1].detach().cpu().numpy(),
-        "y": inputs[2].detach().cpu().numpy(),
-        "x_cond": inputs[3].detach().cpu().numpy(),
-        "rel_t": inputs[4].detach().cpu().numpy(),
+        "x": inputs[0].detach().to(device="cpu", dtype=torch.float32).numpy(),
+        "t": inputs[1].detach().to(device="cpu", dtype=torch.long).numpy(),
+        "y": inputs[2].detach().to(device="cpu", dtype=torch.float32).numpy(),
+        "x_cond": inputs[3].detach().to(device="cpu", dtype=torch.float32).numpy(),
+        "rel_t": inputs[4].detach().to(device="cpu", dtype=torch.float32).numpy(),
     }
     missing = [name for name in input_names if name not in feed]
     if missing:
         raise ValueError(f"ONNX model has unexpected required inputs: {missing}")
-    outputs = session.run(None, {name: feed[name] for name in input_names})
+    return {name: feed[name] for name in input_names}
+
+
+def run_onnx(session, inputs: tuple[torch.Tensor, ...]) -> np.ndarray:
+    feed = make_onnx_feed(session, inputs)
+    outputs = session.run(None, feed)
     if len(outputs) != 1:
         raise ValueError(f"Expected one ONNX output, got {len(outputs)}.")
     return outputs[0]
@@ -247,12 +294,72 @@ def save_report(report: dict[str, Any]) -> Path:
     return report_path
 
 
+def sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def benchmark_pytorch(
+    model: nn.Module,
+    inputs: tuple[torch.Tensor, ...],
+    device: torch.device,
+    warmup_iters: int,
+    benchmark_iters: int,
+) -> float:
+    with torch.no_grad():
+        for _ in range(warmup_iters):
+            model(*inputs)
+        sync_device(device)
+        start = time.perf_counter()
+        for _ in range(benchmark_iters):
+            model(*inputs)
+        sync_device(device)
+        end = time.perf_counter()
+    return (end - start) / benchmark_iters
+
+
+def benchmark_onnx(
+    session,
+    inputs: tuple[torch.Tensor, ...],
+    warmup_iters: int,
+    benchmark_iters: int,
+) -> float:
+    feed = make_onnx_feed(session, inputs)
+    for _ in range(warmup_iters):
+        session.run(None, feed)
+    start = time.perf_counter()
+    for _ in range(benchmark_iters):
+        session.run(None, feed)
+    end = time.perf_counter()
+    return (end - start) / benchmark_iters
+
+
 def main() -> None:
     args = parse_args()
     device = select_device(args.device)
     config = load_config(args.config)
-    x, t, y, x_cond, rel_t, context_size, seed = load_inputs(args.inputs, device)
-    set_seed(seed)
+    onnx_path = str(resolve_path(args.onnx).resolve())
+    print(f"PyTorch device: {device}")
+    print(f"ONNX model path: {onnx_path}")
+    session = create_onnx_session(onnx_path, args.onnx_provider)
+
+    if args.inputs is not None:
+        _, _, _, x_cond_from_file, _, loaded_context_size, loaded_seed = load_inputs(args.inputs, device)
+        default_context_size = loaded_context_size
+        default_seed = loaded_seed
+        if args.context_size is not None and args.context_size != loaded_context_size:
+            raise ValueError(
+                f"--context-size {args.context_size} does not match inputs context_size {loaded_context_size}."
+            )
+        print(f"Using context_size from inputs: {loaded_context_size}")
+        del x_cond_from_file
+    else:
+        default_context_size = int(args.context_size if args.context_size is not None else config["context_size"])
+        default_seed = args.seed
+
+    set_seed(default_seed)
+    context_size = default_context_size
+    latent_size = int(config["image_size"]) // 8
 
     state_dict = load_checkpoint(args.checkpoint, device)
     config_model_name = config["model"]
@@ -268,51 +375,107 @@ def main() -> None:
     load_state_dict(model, state_dict, args.checkpoint)
     model.eval()
 
-    with torch.no_grad():
-        pt_output = model(x, t, y, x_cond, rel_t).detach().cpu().numpy()
+    results = []
+    any_failed = False
+    for batch_size in args.batch_sizes:
+        if batch_size <= 0:
+            raise ValueError(f"Batch size must be positive, got {batch_size}.")
+        set_seed(default_seed + batch_size)
+        if args.inputs is not None and batch_size == 1:
+            x, t, y, x_cond, rel_t, _, _ = load_inputs(args.inputs, device)
+        else:
+            x, t, y, x_cond, rel_t = make_inputs(batch_size, context_size, latent_size, device)
 
-    onnx_path = str(resolve_path(args.onnx).resolve())
-    onnx_output = run_onnx(onnx_path, (x, t, y, x_cond, rel_t))
+        benchmark = None
+        error = None
+        try:
+            with torch.no_grad():
+                pt_output = model(x, t, y, x_cond, rel_t).detach().cpu().numpy()
 
-    shape_match = tuple(pt_output.shape) == tuple(onnx_output.shape)
-    metrics = compute_metrics(pt_output, onnx_output)
-    values_close = bool(np.allclose(pt_output, onnx_output, rtol=args.rtol, atol=args.atol))
-    passed = bool(shape_match and values_close)
+            onnx_output = run_onnx(session, (x, t, y, x_cond, rel_t))
+            shape_match = tuple(pt_output.shape) == tuple(onnx_output.shape)
+            metrics = compute_metrics(pt_output, onnx_output)
+            values_close = bool(np.allclose(pt_output, onnx_output, rtol=args.rtol, atol=args.atol))
+            passed = bool(shape_match and values_close)
+
+            if args.benchmark:
+                pt_latency = benchmark_pytorch(model, (x, t, y, x_cond, rel_t), device, args.warmup_iters, args.benchmark_iters)
+                onnx_latency = benchmark_onnx(session, (x, t, y, x_cond, rel_t), args.warmup_iters, args.benchmark_iters)
+                benchmark = {
+                    "pytorch_latency_ms": pt_latency * 1000.0,
+                    "onnx_latency_ms": onnx_latency * 1000.0,
+                    "speedup_ratio": pt_latency / max(onnx_latency, 1e-12),
+                    "onnx_provider": args.onnx_provider,
+                }
+        except Exception as exc:
+            pt_output = None
+            onnx_output = None
+            shape_match = False
+            values_close = False
+            metrics = None
+            passed = False
+            error = f"{type(exc).__name__}: {exc}"
+        any_failed = any_failed or not passed
+
+        row = {
+            "batch_size": batch_size,
+            "status": "PASS" if passed else "FAIL",
+            "input_shapes": {
+                "x": list(x.shape),
+                "t": list(t.shape),
+                "y": list(y.shape),
+                "x_cond": list(x_cond.shape),
+                "rel_t": list(rel_t.shape),
+            },
+            "pytorch_output_shape": list(pt_output.shape) if pt_output is not None else None,
+            "onnx_output_shape": list(onnx_output.shape) if onnx_output is not None else None,
+            "shape_match": shape_match,
+            "allclose": values_close,
+            "metrics": metrics,
+            "benchmark": benchmark,
+            "error": error,
+        }
+        results.append(row)
+
+        print(f"\nBatch size {batch_size}: {'PASS' if passed else 'FAIL'}")
+        if error is not None:
+            print(f"  error: {error}")
+            continue
+        print(f"  PyTorch output shape: {tuple(pt_output.shape)}")
+        print(f"  ONNX output shape: {tuple(onnx_output.shape)}")
+        print(f"  shape_match: {shape_match}")
+        print(f"  allclose(rtol={args.rtol}, atol={args.atol}): {values_close}")
+        for key, value in metrics.items():
+            print(f"  {key}: {value:.10g}")
+        if benchmark is not None:
+            print(f"  PyTorch latency: {benchmark['pytorch_latency_ms']:.4f} ms")
+            print(f"  ONNX latency: {benchmark['onnx_latency_ms']:.4f} ms")
+            print(f"  speedup_ratio: {benchmark['speedup_ratio']:.4f}x")
 
     report = {
-        "status": "PASS" if passed else "FAIL",
+        "status": "FAIL" if any_failed else "PASS",
         "config": args.config,
         "checkpoint": args.checkpoint,
         "onnx": onnx_path,
         "inputs": args.inputs,
-        "seed": seed,
+        "seed": default_seed,
+        "context_size": context_size,
+        "batch_sizes": args.batch_sizes,
+        "pytorch_device": str(device),
+        "onnx_provider": args.onnx_provider,
         "rtol": args.rtol,
         "atol": args.atol,
-        "input_shapes": {
-            "x": list(x.shape),
-            "t": list(t.shape),
-            "y": list(y.shape),
-            "x_cond": list(x_cond.shape),
-            "rel_t": list(rel_t.shape),
-        },
-        "pytorch_output_shape": list(pt_output.shape),
-        "onnx_output_shape": list(onnx_output.shape),
-        "shape_match": shape_match,
-        "allclose": values_close,
-        "metrics": metrics,
+        "benchmark": args.benchmark,
+        "benchmark_iters": args.benchmark_iters if args.benchmark else None,
+        "warmup_iters": args.warmup_iters if args.benchmark else None,
+        "results": results,
     }
     report_path = save_report(report)
 
     print("CDiT.forward input signature: forward(x, t, y, x_cond, rel_t)")
-    print(f"PyTorch output shape: {tuple(pt_output.shape)}")
-    print(f"ONNX output shape: {tuple(onnx_output.shape)}")
-    for key, value in metrics.items():
-        print(f"{key}: {value:.10g}")
-    print(f"shape_match: {shape_match}")
-    print(f"allclose(rtol={args.rtol}, atol={args.atol}): {values_close}")
     print(f"Alignment report: {report_path}")
-    print(f"RESULT: {'PASS' if passed else 'FAIL'}")
-    if not passed:
+    print(f"RESULT: {report['status']}")
+    if any_failed:
         raise SystemExit(1)
 
 

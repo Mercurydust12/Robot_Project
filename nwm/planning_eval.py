@@ -34,6 +34,16 @@ import distributed as dist
 from models import CDiT_models
 
 
+def resolve_checkpoint_path(config, args):
+    if args.checkpoint_path is not None:
+        checkpoint_path = args.checkpoint_path
+    else:
+        checkpoint_path = f'{config["results_dir"]}/{config["run_name"]}/checkpoints/{args.ckp}.pth.tar'
+    checkpoint_path = os.path.abspath(os.path.expanduser(checkpoint_path))
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    return checkpoint_path
+
+
 with open("config/data_config.yaml", "r") as f:
     data_config = yaml.safe_load(f)
 
@@ -188,7 +198,8 @@ class WM_Planning_Evaluator:
             input_size=latent_size,
         )
 
-        ckp = torch.load(f'{self.config["results_dir"]}/{self.config["run_name"]}/checkpoints/{args.ckp}.pth.tar', map_location='cpu', weights_only=False)
+        checkpoint_path = resolve_checkpoint_path(self.config, args)
+        ckp = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         model.load_state_dict(ckp["ema"], strict=True)
         model.eval()
         model.to(self.device)
@@ -418,6 +429,7 @@ if __name__ == "__main__":
     # Default Args
     parser.add_argument("--exp", type=str, default=None, help="experiment name")
     parser.add_argument("--ckp", type=str, default='0100000', help="experiment name")
+    parser.add_argument("--checkpoint-path", type=str, default=None, help="explicit checkpoint path")
 
     parser.add_argument("--datasets", type=str, default=None, help="dataset name")
     parser.add_argument("--output_dir", type=str, default=None, help="output dir to save model predictions")

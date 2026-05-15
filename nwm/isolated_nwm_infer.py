@@ -23,6 +23,192 @@ from datasets import EvalDataset
 from PIL import Image
 
 
+def resolve_checkpoint_path(config, args):
+    if args.checkpoint_path is not None:
+        checkpoint_path = args.checkpoint_path
+    else:
+        checkpoint_path = f'{config["results_dir"]}/{config["run_name"]}/checkpoints/{args.ckp}.pth.tar'
+    checkpoint_path = os.path.abspath(os.path.expanduser(checkpoint_path))
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    return checkpoint_path
+
+
+def resolve_onnx_model_path(args):
+    if args.onnx_model_path is None:
+        raise ValueError("--onnx-model-path is required when --denoiser-backend onnx.")
+    onnx_model_path = os.path.abspath(os.path.expanduser(args.onnx_model_path))
+    print(f"Loading ONNX denoiser from: {onnx_model_path}")
+    return onnx_model_path
+
+
+class ONNXCDiTWrapper:
+    EXPECTED_INPUTS = {
+        "x": [None, 4, 28, 28],
+        "t": [None],
+        "y": [None, 3],
+        "x_cond": [None, 4, 4, 28, 28],
+        "rel_t": [None],
+    }
+    EXPECTED_OUTPUTS = {"output": [None, 8, 28, 28]}
+    EXPECTED_INPUT_ORDER = ["x", "t", "y", "x_cond", "rel_t"]
+    NUMPY_DTYPES = {
+        "tensor(float)": np.float32,
+        "tensor(float16)": np.float16,
+        "tensor(int64)": np.int64,
+        "tensor(int32)": np.int32,
+    }
+    TORCH_DTYPES = {
+        np.float32: torch.float32,
+        np.float16: torch.float16,
+        np.int64: torch.long,
+        np.int32: torch.int32,
+    }
+
+    def __init__(self, model_path, provider):
+        import onnxruntime as ort
+
+        self.model_path = model_path
+        self.provider = provider
+        self.logged_first_call = False
+
+        print(f"ONNX Runtime version: {ort.__version__}")
+        print(f"ONNX model path: {model_path}")
+        available_providers = ort.get_available_providers()
+        print(f"ONNX Runtime providers available: {available_providers}")
+        if provider not in available_providers:
+            raise ValueError(
+                f"Requested ONNX Runtime provider '{provider}' is not available. "
+                f"Available providers: {available_providers}"
+            )
+
+        self.session = ort.InferenceSession(model_path, providers=[provider])
+        self.inputs_meta = self.session.get_inputs()
+        self.outputs_meta = self.session.get_outputs()
+        self.input_shapes = {inp.name: list(inp.shape) for inp in self.inputs_meta}
+        self.input_types = {inp.name: inp.type for inp in self.inputs_meta}
+        self.input_names = [inp.name for inp in self.inputs_meta]
+        self.output_shapes = {out.name: list(out.shape) for out in self.outputs_meta}
+        self.output_names = [out.name for out in self.outputs_meta]
+        self.dynamic_batch, self.fixed_batch_size = self._validate_model_metadata()
+        print(f"ONNX Runtime provider selected: {provider}")
+        print(f"ONNX Runtime providers used: {self.session.get_providers()}")
+        print(f"Detected ONNX input shapes: {self.input_shapes}")
+        print(f"Detected ONNX input types: {self.input_types}")
+        print(f"Detected ONNX output shapes: {self.output_shapes}")
+        print(f"ONNX batch dimension is dynamic: {self.dynamic_batch}")
+        if self.dynamic_batch:
+            print("Allowed eval batch size: dynamic positive batch size")
+        else:
+            print(f"Allowed eval batch size: {self.fixed_batch_size}")
+
+    def _is_dynamic_dim(self, dim):
+        return dim is None or isinstance(dim, str)
+
+    def _validate_shape(self, name, shape, expected):
+        if len(shape) != len(expected):
+            raise ValueError(f"ONNX '{name}' rank mismatch: expected {expected}, got {shape}.")
+        for axis, (dim, expected_dim) in enumerate(zip(shape, expected)):
+            if axis == 0:
+                continue
+            if self._is_dynamic_dim(dim):
+                raise ValueError(
+                    f"ONNX '{name}' has dynamic non-batch dimension at axis {axis}: {shape}. "
+                    "Only batch dimension may be dynamic."
+                )
+            if int(dim) != int(expected_dim):
+                raise ValueError(
+                    f"ONNX '{name}' shape mismatch at axis {axis}: expected {expected_dim}, got {dim}. "
+                    f"Full shape: {shape}."
+                )
+
+    def _validate_model_metadata(self):
+        if self.input_names != self.EXPECTED_INPUT_ORDER:
+            raise ValueError(f"ONNX input order mismatch: expected {self.EXPECTED_INPUT_ORDER}, got {self.input_names}.")
+        if len(self.output_names) != 1 or self.output_names[0] != "output":
+            raise ValueError(f"ONNX output mismatch: expected ['output'], got {self.output_names}.")
+
+        batch_dims = []
+        for name, expected_shape in self.EXPECTED_INPUTS.items():
+            shape = self.input_shapes[name]
+            self._validate_shape(name, shape, expected_shape)
+            input_type = self.input_types[name]
+            if input_type not in self.NUMPY_DTYPES:
+                raise ValueError(f"Unsupported ONNX input dtype for '{name}': {input_type}.")
+            batch_dims.append(shape[0])
+        for name, expected_shape in self.EXPECTED_OUTPUTS.items():
+            self._validate_shape(name, self.output_shapes[name], expected_shape)
+            batch_dims.append(self.output_shapes[name][0])
+
+        dynamic_flags = [self._is_dynamic_dim(dim) for dim in batch_dims]
+        if any(dynamic_flags):
+            if not all(dynamic_flags):
+                raise ValueError(f"ONNX model mixes dynamic and fixed batch dimensions: {batch_dims}.")
+            return True, None
+
+        fixed_sizes = {int(dim) for dim in batch_dims}
+        if len(fixed_sizes) != 1:
+            raise ValueError(f"ONNX model has inconsistent fixed batch dimensions: {batch_dims}.")
+        return False, fixed_sizes.pop()
+
+    def _numpy_input(self, tensor, name):
+        numpy_dtype = self.NUMPY_DTYPES[self.input_types[name]]
+        torch_dtype = self.TORCH_DTYPES[numpy_dtype]
+        tensor = tensor.detach().to(device="cpu", dtype=torch_dtype)
+        array = tensor.numpy()
+        return array.astype(numpy_dtype, copy=False)
+
+    def _check_runtime_shapes(self, tensors):
+        batch_size = None
+        for name, tensor in tensors.items():
+            shape = self.input_shapes[name]
+            actual_shape = tuple(tensor.shape)
+            if len(actual_shape) != len(shape):
+                raise ValueError(f"Runtime input '{name}' rank mismatch: ONNX shape {shape}, runtime shape {actual_shape}.")
+            if batch_size is None:
+                batch_size = int(actual_shape[0])
+            elif int(actual_shape[0]) != batch_size:
+                raise ValueError(f"Runtime input '{name}' batch {actual_shape[0]} does not match batch {batch_size}.")
+            for axis, dim in enumerate(shape):
+                if axis == 0:
+                    continue
+                if int(actual_shape[axis]) != int(dim):
+                    raise ValueError(
+                        f"Runtime input '{name}' shape mismatch at axis {axis}: "
+                        f"ONNX expects {dim}, got {actual_shape[axis]}. Full runtime shape: {actual_shape}."
+                    )
+        if not self.dynamic_batch and batch_size != self.fixed_batch_size:
+            raise ValueError(
+                f"ONNX denoiser is exported with fixed batch size {self.fixed_batch_size}, "
+                f"but runtime batch size is {batch_size}. Re-run with --batch_size {self.fixed_batch_size} "
+                "or use a dynamic-batch ONNX model."
+            )
+        return batch_size
+
+    def forward(self, x, t, y, x_cond, rel_t):
+        with torch.no_grad():
+            tensors = {"x": x, "t": t, "y": y, "x_cond": x_cond, "rel_t": rel_t}
+            self._check_runtime_shapes(tensors)
+            feeds = {
+                "x": self._numpy_input(x, "x"),
+                "t": self._numpy_input(t, "t"),
+                "y": self._numpy_input(y, "y"),
+                "x_cond": self._numpy_input(x_cond, "x_cond"),
+                "rel_t": self._numpy_input(rel_t, "rel_t"),
+            }
+            feeds = {name: feeds[name] for name in self.EXPECTED_INPUT_ORDER}
+            outputs = self.session.run(None, feeds)
+            if len(outputs) != 1:
+                raise ValueError(f"Expected one ONNX denoiser output, got {len(outputs)}.")
+
+            output = torch.from_numpy(outputs[0]).to(device=x.device, dtype=x.dtype)
+            if not self.logged_first_call:
+                input_shapes = {name: tuple(value.shape) for name, value in feeds.items()}
+                print(f"First ONNX denoiser input shapes: {input_shapes}")
+                print(f"First ONNX denoiser output shape: {tuple(output.shape)}")
+                self.logged_first_call = True
+            return output
+
+
 def save_image(output_file, img, unnormalize_img):
     img = img.detach().cpu()
     if unnormalize_img:
@@ -116,7 +302,7 @@ def generate_time(args, output_dir, idxs, all_models, obs_image, gt_output, delt
         visualize_preds(output_dir, idxs, sec, x_pred_pixels)
 
 def visualize_preds(output_dir, idxs, sec, x_pred_pixels):
-    for batch_idx, sample_idx in enumerate(idxs.squeeze()):
+    for batch_idx, sample_idx in enumerate(idxs.flatten()):
         sample_idx = int(sample_idx.item())
         sample_folder = os.path.join(output_dir, f'id_{sample_idx}')
         os.makedirs(sample_folder, exist_ok=True)
@@ -156,19 +342,27 @@ def main(args):
     args.latent_size = config['image_size'] // 8
 
     num_cond = config['context_size']
+    print(f"Denoiser backend selected: {args.denoiser_backend}")
     print("loading")
     model_lst = (None, None, None)
     if not args.gt:
-        model = CDiT_models[config['model']](context_size=num_cond, input_size=latent_size, in_channels=4)
-        ckp = torch.load(f'{config["results_dir"]}/{config["run_name"]}/checkpoints/{args.ckp}.pth.tar', map_location='cpu', weights_only=False)
-        print(model.load_state_dict(ckp["ema"], strict=True))
-        model.eval()
-        model.to(device)
-        if args.torch_compile:
-            model = torch.compile(model)
+        if args.denoiser_backend == "torch":
+            model = CDiT_models[config['model']](context_size=num_cond, input_size=latent_size, in_channels=4)
+            checkpoint_path = resolve_checkpoint_path(config, args)
+            ckp = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            print(model.load_state_dict(ckp["ema"], strict=True))
+            model.eval()
+            model.to(device)
+            if args.torch_compile:
+                model = torch.compile(model)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], find_unused_parameters=False)
+        elif args.denoiser_backend == "onnx":
+            onnx_model_path = resolve_onnx_model_path(args)
+            model = ONNXCDiTWrapper(onnx_model_path, args.onnx_provider)
+        else:
+            raise ValueError(f"Unsupported denoiser backend: {args.denoiser_backend}")
         diffusion = create_diffusion(str(250))
         vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").to(device)
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], find_unused_parameters=False)
         model_lst = (model, diffusion, vae)
 
     # Loading Datasets
@@ -204,6 +398,9 @@ def main(args):
         curr_data_loader = datasets[dataset_name]
         
         for data_iter_step, (idxs, obs_image, gt_image, delta) in enumerate(metric_logger.log_every(curr_data_loader, print_freq, header)):
+            if args.max_eval_batches is not None and data_iter_step >= args.max_eval_batches:
+                print(f"Stopping after --max-eval-batches {args.max_eval_batches}")
+                break
             with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
                 obs_image = obs_image[:, -num_cond:].to(device)
                 gt_image = gt_image.to(device)
@@ -226,6 +423,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default=None, help="output directory")
     parser.add_argument("--exp", type=str, default=None, help="experiment name")
     parser.add_argument("--ckp", type=str, default='0100000')
+    parser.add_argument("--checkpoint-path", type=str, default=None, help="explicit checkpoint path")
     parser.add_argument("--num_sec_eval", type=int, default=5)
     parser.add_argument("--input_fps", type=int, default=4)
     parser.add_argument("--datasets", type=str, default=None, help="dataset name")
@@ -236,6 +434,10 @@ if __name__ == "__main__":
     parser.add_argument("--rollout_fps_values", type=str, default='1,4', help="")
     parser.add_argument("--gt", type=int, default=0, help="set to 1 to produce ground truth evaluation set")
     parser.add_argument("--torch-compile", type=int, default=0, help="enable torch.compile for inference")
+    parser.add_argument("--denoiser-backend", type=str, default="torch", choices=["torch", "onnx"], help="denoiser backend")
+    parser.add_argument("--onnx-model-path", type=str, default=None, help="ONNX denoiser model path")
+    parser.add_argument("--onnx-provider", type=str, default="CPUExecutionProvider", help="ONNX Runtime execution provider")
+    parser.add_argument("--max-eval-batches", type=int, default=None, help="optional limit for smoke evaluation batches")
     args = parser.parse_args()
     
     args.rollout_fps_values = [int(fps) for fps in args.rollout_fps_values.split(',')]

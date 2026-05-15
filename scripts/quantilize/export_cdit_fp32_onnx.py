@@ -119,6 +119,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--opset", type=int, default=18)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--dynamic-batch",
+        action="store_true",
+        help="Export ONNX with dynamic axes only on the batch dimension.",
+    )
     return parser.parse_args()
 
 
@@ -308,6 +313,21 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     wrapper = CDiTExportWrapper(model).eval()
+    dynamic_axes = None
+    if args.dynamic_batch:
+        dynamic_axes = {
+            "x": {0: "batch"},
+            "t": {0: "batch"},
+            "y": {0: "batch"},
+            "x_cond": {0: "batch"},
+            "rel_t": {0: "batch"},
+            "output": {0: "batch"},
+        }
+        print(f"Dynamic batch axes: {dynamic_axes}")
+    export_kwargs = {}
+    if args.dynamic_batch:
+        export_kwargs["dynamo"] = False
+        print("Using legacy ONNX exporter for dynamic_axes batch export.")
     try:
         torch.onnx.export(
             wrapper,
@@ -317,6 +337,8 @@ def main() -> None:
             output_names=["output"],
             opset_version=args.opset,
             do_constant_folding=True,
+            dynamic_axes=dynamic_axes,
+            **export_kwargs,
         )
     except Exception as exc:
         print("ONNX export failed.")
