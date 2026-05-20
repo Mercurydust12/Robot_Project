@@ -1,0 +1,14 @@
+uv run torchrun --master_port=29502 --nproc-per-node=1 planning_eval.py \
+    --exp config/nwm_cdit_xl.yaml \
+    --datasets tartan_drive \
+    --rollout_stride 1 \
+    --batch_size 1 \
+    --num_samples 20 \
+    --topk 5 \
+    --num_workers 8 \
+    --output_dir ./results_1 \
+    --save_preds \
+    --ckp 0100000 \
+    --opt_steps 1 \
+    --num_repeat_eval 3 \
+    --plot
