@@ -401,6 +401,7 @@ def main() -> None:
         nodes_to_exclude=nodes_to_exclude,
         calibrate_method=calibrate_method,
         extra_options=extra_options,
+        use_external_data_format=True,
     )
 
     output_qdq_removed = False

@@ -1,0 +1,11 @@
+uv run torchrun --master_port=29503 --nproc-per-node=1 /opt/data/private/Linxi/nwm/git/Robot_Project/nwm/isolated_nwm_infer.py \
+    --exp config/nwm_cdit_xl.yaml \
+    --ckp 0100000 \
+    --datasets recon \
+    --batch_size 1 \
+    --num_workers 8 \
+    --eval_type rollout \
+    --output_dir ./results_onnx \
+    --denoiser-backend onnx \
+    --onnx-model-path /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/xl/onnx_int8_qdq/cdit_xl_int8_qdq.onnx \
+    --onnx-provider CUDAExecutionProvider

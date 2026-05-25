@@ -193,21 +193,34 @@ class WM_Planning_Evaluator:
         
         # Loading Model
         print("loading")
-        model = CDiT_models[self.config['model']](
-            context_size=self.num_cond,
-            input_size=latent_size,
-        )
-
-        checkpoint_path = resolve_checkpoint_path(self.config, args)
-        ckp = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-        model.load_state_dict(ckp["ema"], strict=True)
-        model.eval()
-        model.to(self.device)
-        self.model = torch.compile(model)
+        print(f"Denoiser backend selected: {self.args.denoiser_backend}")
+        if self.args.denoiser_backend == "torch":
+            model = CDiT_models[self.config['model']](
+                context_size=self.num_cond,
+                input_size=latent_size,
+            )
+            checkpoint_path = resolve_checkpoint_path(self.config, args)
+            ckp = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            model.load_state_dict(ckp["ema"], strict=True)
+            model.eval()
+            model.to(self.device)
+            self.model = torch.compile(model)
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.device], find_unused_parameters=False)
+            self.model_without_ddp = self.model.module
+            
+        elif self.args.denoiser_backend == "onnx":
+            # 动态导入 wrapper 和 路径解析函数
+            from isolated_nwm_infer import ONNXCDiTWrapper, resolve_onnx_model_path
+            onnx_model_path = resolve_onnx_model_path(self.args)
+            self.model = ONNXCDiTWrapper(onnx_model_path, self.args.onnx_provider)
+            # ONNX Wrapper 不需要被 DistributedDataParallel (DDP) 包裹
+            self.model_without_ddp = self.model
+            
+        else:
+            raise ValueError(f"Unsupported denoiser backend: {self.args.denoiser_backend}")
+        
         self.diffusion = create_diffusion(str(250))
-        self.vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").to(device)
-        self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.device], find_unused_parameters=False)
-        self.model_without_ddp = self.model.module
+        self.vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(self.device)
          
         self.loss_fn = lpips.LPIPS(net='alex').to(self.device)
         self.mode = 'cem' # assume CEM for planning
@@ -444,6 +457,10 @@ if __name__ == "__main__":
     parser.add_argument("--opt_steps", type=int, default=15, help="num iterations for CEM")
     parser.add_argument("--num_repeat_eval", type=int, default=1, help="number of evals for one action")
     parser.add_argument('--plot', action='store_true', default=False)
+
+    parser.add_argument("--denoiser-backend", type=str, default="torch", choices=["torch", "onnx"], help="denoiser backend")
+    parser.add_argument("--onnx-model-path", type=str, default=None, help="ONNX denoiser model path")
+    parser.add_argument("--onnx-provider", type=str, default="CPUExecutionProvider", help="ONNX Runtime execution provider")
     args = parser.parse_args()
     
     evaluator = WM_Planning_Evaluator(args)

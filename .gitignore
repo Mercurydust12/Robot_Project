@@ -10,15 +10,10 @@ nwm/data
 nwm/checkpoint
 nwm/downloads
 nwm/eval_results
+scripts/quantilize/__pycache__
 
 AGENTS.md
 checkpoint
 .vscode
 .codex
-output
 
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/

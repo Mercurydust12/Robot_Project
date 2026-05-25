@@ -1,0 +1,173 @@
+=========================================================================
+🚀 开始执行 CDiT 模型量化与边缘端部署管线 (Using uv manager)
+=========================================================================
+配置路径: /opt/data/private/Linxi/nwm/config/recon_eval_cdit_s.yaml
+权重路径: /opt/data/private/Linxi/nwm/logs/nwm_cdit_xl/checkpoints/cdit_s_100000.pth.tar
+=========================================================================
+
+[Step 1/5] 正在导出全精度 FP32 ONNX 计算图...
+Uninstalled 1 package in 43ms
+░░░░░░░░░░░░░░░░░░░░ [0/1] Installing wheels...                                                                                                                                                                      warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 580ms
+Loaded checkpoint: /opt/data/private/Linxi/nwm/logs/nwm_cdit_xl/checkpoints/cdit_s_100000.pth.tar
+load_state_dict result: <All keys matched successfully>
+CDiT.forward input signature: forward(x, t, y, x_cond, rel_t)
+input x: shape=(1, 4, 28, 28), dtype=torch.float32
+input t: shape=(1,), dtype=torch.int64
+input y: shape=(1, 3), dtype=torch.float32
+input x_cond: shape=(1, 4, 4, 28, 28), dtype=torch.float32
+input rel_t: shape=(1,), dtype=torch.float32
+output: shape=(1, 8, 28, 28), dtype=torch.float32
+Saved alignment inputs: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/alignment_inputs/cdit_fp32_align_inputs.npz
+[torch.onnx] Obtain model graph for `CDiTExportWrapper([...]` with `torch.export.export(..., strict=False)`...
+[torch.onnx] Obtain model graph for `CDiTExportWrapper([...]` with `torch.export.export(..., strict=False)`... ✅
+[torch.onnx] Run decompositions...
+/root/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/copyreg.py:99: FutureWarning: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+  return cls.__new__(cls, *args)
+[torch.onnx] Run decompositions... ✅
+[torch.onnx] Translate the graph into ONNX...
+[torch.onnx] Translate the graph into ONNX... ✅
+[torch.onnx] Optimize the ONNX graph...
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+Skipping constant folding for op Split with multiple outputs.
+[torch.onnx] Optimize the ONNX graph... ✅
+Exported ONNX: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_fp32/cdit_s_fp32.onnx
+
+[Step 2/5] 正在验证 PyTorch 与 FP32 ONNX 模型的输出一致性 (无损对齐检查)...
+Uninstalled 1 package in 39ms
+░░░░░░░░░░░░░░░░░░░░ [0/1] Installing wheels...                                                                                                                                                                      warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 771ms
+PyTorch device: cuda
+ONNX model path: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_fp32/cdit_s_fp32.onnx
+ONNX Runtime providers available: ['AzureExecutionProvider', 'CPUExecutionProvider']
+ONNX Runtime provider selected: CPUExecutionProvider
+ONNX Runtime providers used: ['CPUExecutionProvider']
+Using context_size from inputs: 4
+Loaded checkpoint: /opt/data/private/Linxi/nwm/logs/nwm_cdit_xl/checkpoints/cdit_s_100000.pth.tar
+load_state_dict result: <All keys matched successfully>
+
+Batch size 1: PASS
+  PyTorch output shape: (1, 8, 28, 28)
+  ONNX output shape: (1, 8, 28, 28)
+  shape_match: True
+  allclose(rtol=0.0001, atol=0.0001): True
+  max_abs_error: 4.947185516e-06
+  mean_abs_error: 5.887077025e-07
+  rmse: 7.202736895e-07
+  relative_l2_error: 1.025536227e-06
+  cosine_similarity: 1
+  PyTorch latency: 11.7069 ms
+  ONNX latency: 64.6043 ms
+  speedup_ratio: 0.1812x
+CDiT.forward input signature: forward(x, t, y, x_cond, rel_t)
+Alignment report: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/reports/cdit_fp32_onnx_alignment.json
+RESULT: PASS
+
+[Step 3/5] 正在收集量化专用的非偏置校准数据集 (128个样本)...
+Uninstalled 1 package in 43ms
+░░░░░░░░░░░░░░░░░░░░ [0/1] Installing wheels...                                                                                                                                                                      warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 547ms
+Loaded checkpoint: /opt/data/private/Linxi/nwm/logs/nwm_cdit_xl/checkpoints/cdit_s_100000.pth.tar
+load_state_dict result: <All keys matched successfully>
+Saved calibration NPZ: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/calibration/cdit_s_calib_128.npz
+num_samples: 128
+model: CDiT-S/2
+context_size: 4
+latent_size: 28
+timestep_min: 0
+timestep_max: 999
+timestep_unique: 122
+
+[Step 4/5] 正在执行全通道静态 INT8 QDQ 量化压缩...
+Uninstalled 1 package in 41ms
+░░░░░░░░░░░░░░░░░░░░ [0/1] Installing wheels...                                                                                                                                                                      warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 521ms
+Input ONNX: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_fp32/cdit_s_fp32.onnx
+Output ONNX: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_int8_qdq/cdit_s_int8_qdq.onnx
+Calibration NPZ: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/calibration/cdit_s_calib_128.npz
+Quant format: QDQ
+Activation type: qint8
+Weight type: qint8
+Per-channel: True
+Reduce range: False
+Calibration method: MinMax
+Calibration samples: 128
+Excluded quantizable nodes: 0
+WARNING:root:Please consider to run pre-processing before quantization. Refer to example: https://github.com/microsoft/onnxruntime-inference-examples/blob/main/quantization/image_classification/cpu/ReadMe.md 
+WARNING:root:Please consider pre-processing before quantization. See https://github.com/microsoft/onnxruntime-inference-examples/blob/main/quantization/image_classification/cpu/ReadMe.md 
+Quantized ONNX: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_int8_qdq/cdit_s_int8_qdq.onnx
+QuantizeLinear nodes: 376
+DequantizeLinear nodes: 498
+INT8 initializers: 546
+UINT8 initializers: 0
+Final output name: output
+Output-side QDQ removed: False
+Final output has output-side QDQ: False
+
+[Step 5/5] 正在对量化后的 INT8 模型进行最终精度损失与余弦相似度评估...
+Uninstalled 1 package in 37ms
+░░░░░░░░░░░░░░░░░░░░ [0/1] Installing wheels...                                                                                                                                                                      warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 544ms
+FP32 ONNX output shape: (1, 8, 28, 28)
+INT8 QDQ ONNX output shape: (1, 8, 28, 28)
+max_abs_error: 0.5099654198
+mean_abs_error: 0.09331381393
+rmse: 0.119721227
+relative_l2_error: 0.1704609008
+cosine_similarity: 0.9906507986
+per_channel_mean_abs_error:
+  channel_0: 0.1158781301
+  channel_1: 0.1140113756
+  channel_2: 0.1155165845
+  channel_3: 0.1115099749
+  channel_4: 0.07145217036
+  channel_5: 0.06527615973
+  channel_6: 0.08243029529
+  channel_7: 0.07043582094
+per_sample_relative_l2_error:
+  sample_0: rel_l2=0.1704609008, mean_abs=0.09331381393, cosine=0.9906507986
+output_ranges:
+  fp32_min: -3.172988653
+  fp32_max: 3.156018019
+  int8_min: -3.479708195
+  int8_max: 3.435190201
+shape_match: True
+allclose(rtol=0.01, atol=0.01): False
+Alignment report: /opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/reports/cdit_fp32_vs_int8_qdq_alignment.json
+RESULT: FAIL
+
+=========================================================================
+🎉 恭喜！全套 CDiT 静态 INT8 量化及部署流水线已成功执行完毕！
+=========================================================================

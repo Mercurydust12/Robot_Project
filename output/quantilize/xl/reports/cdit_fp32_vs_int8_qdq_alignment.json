@@ -1,0 +1,55 @@
+{
+  "status": "FAIL",
+  "fp32_onnx": "/opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_fp32/cdit_xl_fp32.onnx",
+  "int8_onnx": "/opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/onnx_int8_qdq/cdit_xl_int8_qdq.onnx",
+  "inputs": "/opt/data/private/Linxi/nwm/git/Robot_Project/output/quantilize/alignment_inputs/cdit_fp32_align_inputs.npz",
+  "rtol": 0.01,
+  "atol": 0.01,
+  "fp32_output_shape": [
+    1,
+    8,
+    28,
+    28
+  ],
+  "int8_output_shape": [
+    1,
+    8,
+    28,
+    28
+  ],
+  "shape_match": true,
+  "allclose": false,
+  "metrics": {
+    "max_abs_error": 0.23577072471380234,
+    "mean_abs_error": 0.0543501081143353,
+    "rmse": 0.06708979289135035,
+    "relative_l2_error": 0.0906197960639697,
+    "cosine_similarity": 0.9962337594703146
+  },
+  "per_channel_mean_abs_error": [
+    0.04553056813083644,
+    0.050610801486388426,
+    0.05089994781105723,
+    0.05009291456331177,
+    0.0661905617358125,
+    0.07142474392086876,
+    0.0471489287209602,
+    0.05290239854544705
+  ],
+  "per_sample_metrics": [
+    {
+      "max_abs_error": 0.23577072471380234,
+      "mean_abs_error": 0.0543501081143353,
+      "rmse": 0.06708979289135035,
+      "relative_l2_error": 0.0906197960639697,
+      "cosine_similarity": 0.9962337594703146,
+      "sample_index": 0
+    }
+  ],
+  "output_ranges": {
+    "fp32_min": -3.4302682876586914,
+    "fp32_max": 3.311244249343872,
+    "int8_min": -3.330286741256714,
+    "int8_max": 3.3303539752960205
+  }
+}
