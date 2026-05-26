@@ -9,7 +9,7 @@
 set -e
 
 # 1. 基础全局路径配置 (根据您的设定)
-NWM_CONFIG="/opt/data/private/Linxi/nwm/config/recon_eval_cdit_s.yaml"
+NWM_CONFIG="/opt/data/private/Linxi/nwm/config/nwm_cdit_xl.yaml"
 CHECKPOINT="/opt/data/private/Linxi/nwm/logs/nwm_cdit_xl/checkpoints/0100000.pth.tar"
 
 # 2. 输出与对齐路径配置 (脚本内部会自动将其连接到 Robot_Project 根目录下的 output/ 目录)

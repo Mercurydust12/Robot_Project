@@ -11,6 +11,11 @@ nwm/checkpoint
 nwm/downloads
 nwm/eval_results
 scripts/quantilize/__pycache__
+output/quantilize/alignment_inputs
+output/quantilize/calibration
+output/quantilize/onnx_fp32
+output/quantilize/onnx_int8_qdq
+output/quantilize/reports
 
 AGENTS.md
 checkpoint
