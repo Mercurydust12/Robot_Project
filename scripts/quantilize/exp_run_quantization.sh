@@ -30,7 +30,8 @@ uv run python export_cdit_fp32_onnx.py \
     --config "$NWM_CONFIG" \
     --checkpoint "$CHECKPOINT" \
     --output "$FP32_ONNX" \
-    --opset 18
+    --opset 18 \
+    --dynamic-batch
 
 echo -e "\n[Step 2/5] 正在验证 PyTorch 与 FP32 ONNX 模型的输出一致性 (无损对齐检查)..."
 uv run python validate_cdit_fp32_onnx.py \
