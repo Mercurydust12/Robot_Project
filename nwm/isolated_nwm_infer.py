@@ -81,7 +81,21 @@ class ONNXCDiTWrapper:
                 f"Available providers: {available_providers}"
             )
 
-        self.session = ort.InferenceSession(model_path, providers=[provider])
+        #self.session = ort.InferenceSession(model_path, providers=[provider])
+        # ==========================================
+        # 🌟 多卡适配核心修改：获取当前进程的 GPU ID 并绑定
+        # ==========================================
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        print(f"🚀 [ONNX 引擎] 进程 {local_rank} 正在将 ONNX Runtime 强制绑定至 GPU: {local_rank}")
+        
+        if provider == 'CUDAExecutionProvider':
+            # 将 device_id 传给 CUDA provider
+            ort_providers = [('CUDAExecutionProvider', {'device_id': local_rank}), 'CPUExecutionProvider']
+        else:
+            ort_providers = [provider]
+            
+        self.session = ort.InferenceSession(model_path, providers=ort_providers)
+        # ==========================================
         self.inputs_meta = self.session.get_inputs()
         self.outputs_meta = self.session.get_outputs()
         self.input_shapes = {inp.name: list(inp.shape) for inp in self.inputs_meta}
